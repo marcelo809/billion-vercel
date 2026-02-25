@@ -1,0 +1,10 @@
+{
+  "name": "billion-vercel",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "pdf-parse": "^1.1.1",
+    "pdfkit": "^0.14.0",
+    "busboy": "^1.6.0"
+  }
+}
