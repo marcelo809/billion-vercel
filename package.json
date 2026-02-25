@@ -1,9 +1,4 @@
-{
-  "name": "billion-vercel",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "formidable": "^3.5.2",
-    "pdfkit": "^0.15.0"
-  }
-}
+/api
+  generate-report.js
+index.html
+package.json
