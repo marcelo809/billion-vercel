@@ -1,106 +1,121 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>BILLION — INVERNORD (Auto Reports)</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>BILLION • INVERNORD — Report Generator</title>
   <style>
-    body{ margin:0; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial; background:#0b0f19; color:#fff; }
-    .wrap{ max-width:900px; margin:0 auto; padding:28px 18px; }
-    .card{ background:#111827; border:1px solid rgba(255,255,255,.10); border-radius:16px; padding:18px; }
-    label{ display:block; font-size:12px; color:rgba(255,255,255,.65); margin:10px 0 6px; }
-    input{ width:100%; padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:rgba(0,0,0,.20); color:#fff; }
-    .row{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-    @media(max-width:700px){ .row{ grid-template-columns:1fr; } }
-    .btn{ margin-top:14px; width:100%; padding:12px 12px; border-radius:14px; border:1px solid rgba(255,255,255,.14);
-      background:linear-gradient(135deg, rgba(124,58,237,.95), rgba(6,182,212,.75)); color:#fff; font-weight:700; cursor:pointer; }
-    .small{ font-size:12px; color:rgba(255,255,255,.55); margin-top:10px; line-height:1.35; }
-    .ok{ color:#7CFFB2; }
-    .err{ color:#FF8A8A; }
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:#070a12;color:#eaf0ff}
+    .wrap{max-width:980px;margin:0 auto;padding:48px 20px}
+    .card{background:linear-gradient(180deg,#0b1224 0%,#070a12 100%);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:22px}
+    h1{margin:0 0 6px 0;font-size:28px;letter-spacing:.2px}
+    .sub{margin:0 0 20px 0;color:#a9b4d0}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    label{display:block;font-size:12px;color:#9fb0da;margin:10px 0 6px}
+    input,select{width:100%;box-sizing:border-box;background:#0b1328;border:1px solid rgba(255,255,255,.1);color:#eaf0ff;border-radius:12px;padding:12px}
+    .row{display:flex;gap:12px;align-items:center;margin-top:14px}
+    .btn{
+      flex:1;
+      border:0;border-radius:14px;padding:14px 16px;
+      color:white;font-weight:700;cursor:pointer;
+      background:linear-gradient(90deg,#7c3aed,#06b6d4);
+    }
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .muted{color:#8fa0c7;font-size:12px;margin-top:10px}
+    .status{margin-top:10px;font-size:13px;color:#bcd0ff}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    @media(max-width:800px){.grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h2 style="margin:0 0 12px;">BILLION · INVERNORD</h2>
     <div class="card">
-      <div class="row">
+      <h1>BILLION • INVERNORD</h1>
+      <p class="sub">Sube un PDF (LSEG) y genera el reporte maestro en PDF (cliente-ready).</p>
+
+      <div class="grid">
         <div>
           <label>Firma</label>
           <input id="firm" value="INVERNORD" />
         </div>
         <div>
           <label>Fecha</label>
-          <input id="date" placeholder="Febrero 2026" />
+          <input id="date" type="date" />
         </div>
-      </div>
-
-      <div class="row">
         <div>
           <label>Cliente (opcional)</label>
           <input id="client" placeholder="Cliente / Cuenta" />
         </div>
         <div>
-          <label>Ticker (opcional: si lo dejas vacío, lo intenta detectar)</label>
-          <input id="ticker" placeholder="PLTR" />
+          <label>Ticker (opcional; si lo dejas vacío, lo intenta detectar)</label>
+          <input id="ticker" value="PLTR" />
         </div>
       </div>
 
       <label>PDF (LSEG o fuente)</label>
-      <input id="file" type="file" accept="application/pdf" />
+      <input id="pdf" type="file" accept="application/pdf"/>
 
-      <button class="btn" id="go">Subir PDF y generar reporte (PDF)</button>
+      <div class="row">
+        <button id="btn" class="btn">Subir PDF y generar reporte (PDF)</button>
+      </div>
 
-      <div class="small" id="status">Status: listo.</div>
-      <div class="small">MVP: extracción + heurísticas. Próximo: parsing fino por plantilla LSEG.</div>
+      <div class="status" id="status">Status: listo.</div>
+      <div class="muted">
+        Tip: nómbralo así: <span class="mono">TICKER - 02 2026.pdf</span>. Si el PDF es escaneado (imagen), en fase 2 metemos OCR.
+      </div>
     </div>
   </div>
 
-  <script>
-    const $ = (id) => document.getElementById(id);
+<script>
+  // default date = today
+  const d = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  document.getElementById('date').value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 
-    function setStatus(msg, cls=""){
-      const el = $("status");
-      el.className = "small " + cls;
-      el.textContent = "Status: " + msg;
-    }
+  const btn = document.getElementById('btn');
+  const statusEl = document.getElementById('status');
 
-    $("date").value = new Date().toLocaleDateString("es-MX");
+  btn.addEventListener('click', async () => {
+    const pdf = document.getElementById('pdf').files[0];
+    if (!pdf) { alert('Sube un PDF primero.'); return; }
 
-    $("go").addEventListener("click", async () => {
-      const f = $("file").files?.[0];
-      if(!f){ setStatus("sube un PDF primero.", "err"); return; }
+    btn.disabled = true;
+    statusEl.textContent = 'Status: subiendo y procesando…';
 
-      setStatus("subiendo y generando…", "");
+    const fd = new FormData();
+    fd.append('pdf', pdf);
+    fd.append('firm', document.getElementById('firm').value || 'INVERNORD');
+    fd.append('date', document.getElementById('date').value);
+    fd.append('client', document.getElementById('client').value || '');
+    fd.append('ticker', document.getElementById('ticker').value || '');
 
-      const fd = new FormData();
-      fd.append("file", f);
-      fd.append("firm", $("firm").value || "INVERNORD");
-      fd.append("date", $("date").value || "");
-      fd.append("client", $("client").value || "");
-      fd.append("ticker", $("ticker").value || "");
-
-      try{
-        const res = await fetch("/api/generate-report", { method:"POST", body: fd });
-        if(!res.ok){
-          const j = await res.json().catch(()=>({}));
-          throw new Error(j.error || ("HTTP " + res.status));
-        }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "INVERNORD_report.pdf";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-
-        setStatus("PDF generado ✅", "ok");
-      }catch(e){
-        setStatus("error: " + e.message, "err");
+    try {
+      const res = await fetch('/api/generate-report', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
       }
-    });
-  </script>
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      const ticker = (document.getElementById('ticker').value || 'REPORTE').toUpperCase();
+      a.href = url;
+      a.download = `${ticker} - Reporte Maestro - ${document.getElementById('date').value}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      statusEl.textContent = 'Status: PDF generado y descargado.';
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = 'Status: error. Revisa consola / logs de Vercel.';
+      alert('Error generando el PDF. Abre Vercel → Logs para ver el detalle.\n\n' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>
 </body>
 </html>
