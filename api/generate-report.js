@@ -1,220 +1,128 @@
-import OpenAI from "openai";
-import formidable from "formidable";
 import fs from "fs";
-import pdfParse from "pdf-parse";
+import formidable from "formidable";
 import PDFDocument from "pdfkit";
 
 export const config = {
-  api: { bodyParser: false } // necesario para multipart/form-data
+  api: { bodyParser: false }, // requerido para multipart/form-data
 };
 
 function parseForm(req) {
-  const form = formidable({ multiples: false, maxFileSize: 30 * 1024 * 1024 });
+  const form = formidable({
+    multiples: false,
+    keepExtensions: true,
+    maxFileSize: 25 * 1024 * 1024, // 25MB
+  });
+
   return new Promise((resolve, reject) => {
     form.parse(req, (err, fields, files) => {
-      if (err) reject(err);
-      else resolve({ fields, files });
+      if (err) return reject(err);
+      resolve({ fields, files });
     });
   });
 }
 
-function cleanText(s) {
-  return (s || "")
-    .replace(/\u0000/g, " ")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+function pickUploadedFile(files) {
+  const candidate =
+    files?.pdf ||
+    files?.file ||
+    files?.upload ||
+    Object.values(files || {})[0];
 
-function guessTickerFromText(text) {
-  const m = text.match(/\bTicker\s*[:\-]?\s*([A-Z]{1,6})\b/i) || text.match(/\(([A-Z]{1,6})\)/);
-  return m ? String(m[1]).toUpperCase() : "";
-}
-
-function drawH1(doc, text) {
-  doc.font("Helvetica-Bold").fontSize(16).fillColor("#111827").text(text, { align: "left" });
-  doc.moveDown(0.3);
-  doc.strokeColor("#e5e7eb").lineWidth(1).moveTo(doc.x, doc.y).lineTo(560, doc.y).stroke();
-  doc.moveDown(0.8);
-}
-
-function drawSectionTitle(doc, text) {
-  doc.font("Helvetica-Bold").fontSize(12).fillColor("#111827").text(text);
-  doc.moveDown(0.3);
-}
-
-function drawPara(doc, text) {
-  doc.font("Helvetica").fontSize(10.5).fillColor("#111827").text(text, { lineGap: 2 });
-  doc.moveDown(0.8);
-}
-
-function drawBullets(doc, items) {
-  doc.font("Helvetica").fontSize(10.5).fillColor("#111827");
-  (items || []).forEach((it) => {
-    doc.text(`• ${it}`, { indent: 12, lineGap: 2 });
-  });
-  doc.moveDown(0.8);
-}
-
-function drawKeyValueBullets(doc, kv) {
-  doc.font("Helvetica").fontSize(10.5).fillColor("#111827");
-  Object.entries(kv || {}).forEach(([k, v]) => {
-    if (v === null || v === undefined || String(v).trim() === "") return;
-    doc.text(`• ${k}: ${v}`, { indent: 12, lineGap: 2 });
-  });
-  doc.moveDown(0.8);
+  const uploaded = Array.isArray(candidate) ? candidate[0] : candidate;
+  return uploaded || null;
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).send("Use POST");
+  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
   try {
     const { fields, files } = await parseForm(req);
 
-    const firm = String(fields.firm || "INVERNORD").trim();
-    const clientName = String(fields.client || "").trim();
-    const date = String(fields.date || "").trim();
+    // Debug: qué llegó
+    console.log("FIELDS keys:", Object.keys(fields || {}));
+    console.log("FILES keys:", Object.keys(files || {}));
 
-    const uploaded = files.pdf;
-    if (!uploaded) return res.status(400).send("Missing PDF file field 'pdf'.");
+    const uploaded = pickUploadedFile(files);
 
-    const pdfBuffer = fs.readFileSync(uploaded.filepath);
-    const parsed = await pdfParse(pdfBuffer);
-    const pdfTextRaw = cleanText(parsed.text);
-
-    if (!pdfTextRaw || pdfTextRaw.length < 300) {
-      return res.status(400).send(
-        "No pude extraer texto suficiente del PDF. Si el PDF es escaneado (imagen), necesitas OCR (fase 2)."
-      );
+    if (!uploaded) {
+      return res
+        .status(400)
+        .send("No llegó el archivo. Asegúrate de enviar el campo 'pdf' (multipart/form-data).");
     }
 
-    const tickerFromUser = String(fields.ticker || "").trim().toUpperCase();
-    const tickerDetected = guessTickerFromText(pdfTextRaw);
-    const ticker = (tickerFromUser || tickerDetected || "TICKER").toUpperCase();
+    // Formidable: filepath (v3) o path (v2)
+    const filePath = uploaded.filepath || uploaded.path;
 
-    // --- OpenAI: forzamos SALIDA ESTRUCTURADA (JSON) en tu FORMATO MAESTRO ---
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const model = process.env.OPENAI_MODEL || "gpt-5.2";
-
-    const system = `
-Eres un analista financiero de un RIA. Tu tarea: convertir TEXTO crudo (extraído de un PDF tipo LSEG) en un "Reporte Maestro" para cliente final.
-Reglas:
-- Español claro, profesional, sin hype, sin emojis.
-- NO inventes números. Si un dato no viene en el texto, marca como "N/D".
-- Estructura EXACTA: 
-  1) titulo (EMPRESA (TICKER))
-  2) perspectiva_general (párrafo)
-  3) datos_clave (objeto con bullets: "Último cierre", "Fecha de referencia", "Capitalización de mercado", "Rango 52 semanas", "P/E (TTM)", "P/E (forward)", "ROE", "Ingresos anuales", "Propiedad institucional", "Dividend yield", "Retorno 1M/3M/1Y" si existe)
-  4) analisis_comentarios (2-4 párrafos)
-  5) positivos (3-6 bullets)
-  6) negativos (3-6 bullets)
-  7) conclusion_recomendacion (párrafo + postura: Mantener/Comprar/Vender + tipo de inversor)
-  8) disclaimer (párrafo regulatorio genérico para INVERNORD; no prometas rendimiento)
-- Usa el contenido del PDF como fuente principal.
-`;
-
-    const schema = {
-      name: "reporte_maestro",
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          titulo: { type: "string" },
-          perspectiva_general: { type: "string" },
-          datos_clave: {
-            type: "object",
-            additionalProperties: { type: "string" }
-          },
-          analisis_comentarios: { type: "string" },
-          positivos: { type: "array", items: { type: "string" } },
-          negativos: { type: "array", items: { type: "string" } },
-          conclusion_recomendacion: { type: "string" },
-          disclaimer: { type: "string" }
-        },
-        required: [
-          "titulo",
-          "perspectiva_general",
-          "datos_clave",
-          "analisis_comentarios",
-          "positivos",
-          "negativos",
-          "conclusion_recomendacion",
-          "disclaimer"
-        ]
-      }
-    };
-
-    const input = `
-FIRMA: ${firm}
-CLIENTE: ${clientName || "N/D"}
-FECHA: ${date || "N/D"}
-TICKER OBJETIVO: ${ticker}
-
-TEXTO PDF (LSEG / fuente):
-${pdfTextRaw}
-`;
-
-    // Nota: ejemplo oficial del SDK para Responses API (JS) aquí.  [oai_citation:0‡OpenAI Developers](https://developers.openai.com/api/docs/guides/prompt-engineering/)
-    const response = await client.responses.create({
-      model,
-      input: [
-        { role: "system", content: system },
-        { role: "user", content: input }
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          json_schema: schema
-        }
-      }
-    });
-
-    const jsonText = response.output_text;
-    let report;
-    try {
-      report = JSON.parse(jsonText);
-    } catch {
-      return res.status(500).send("El modelo no devolvió JSON válido. Reintenta.");
+    let pdfBuffer;
+    if (filePath) {
+      pdfBuffer = fs.readFileSync(filePath);
+    } else if (uploaded.buffer) {
+      pdfBuffer = uploaded.buffer;
+    } else {
+      console.log("Uploaded object keys:", Object.keys(uploaded || {}));
+      return res
+        .status(400)
+        .send("No pude encontrar filepath/path del archivo. Revisa Logs en Vercel.");
     }
 
-    // --- Render PDF (cliente-ready) ---
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${ticker}-reporte-maestro.pdf"`);
+    // Metadata
+    const firm = String(fields?.firm || "INVERNORD");
+    const date = String(fields?.date || "");
+    const client = String(fields?.client || "");
+    const ticker = String(fields?.ticker || "").toUpperCase();
 
+    // MVP: por ahora NO parseamos el PDF (solo verificamos que existe)
+    // En fase 2: pdf-parse / OCR / extraction
+    console.log("Uploaded bytes:", pdfBuffer?.length || 0);
+
+    // ===== Generar PDF output =====
     const doc = new PDFDocument({ size: "LETTER", margin: 48 });
-    doc.pipe(res);
+
+    const chunks = [];
+    doc.on("data", (c) => chunks.push(c));
+    doc.on("error", (e) => console.error("PDFKit error:", e));
 
     // Header
-    doc.font("Helvetica-Bold").fontSize(10).fillColor("#6b7280").text(`${firm}`, { align: "left" });
-    doc.font("Helvetica").fontSize(10).fillColor("#6b7280").text(`Fecha: ${date || "N/D"}${clientName ? ` • Cliente: ${clientName}` : ""}`, { align: "left" });
-    doc.moveDown(0.6);
+    doc.fontSize(22).font("Helvetica-Bold").text(`${ticker || "REPORTE"} — ${firm}`, { align: "left" });
+    doc.moveDown(0.3);
+    doc.fontSize(11).font("Helvetica").fillColor("#333333")
+      .text(`Fecha: ${date || "—"}   |   Cliente: ${client || "—"}`);
+    doc.moveDown(1);
 
-    drawH1(doc, report.titulo || `${ticker}`);
+    // Body (placeholder de “reporte maestro”)
+    doc.fillColor("#000000");
+    doc.fontSize(14).font("Helvetica-Bold").text("Reporte Maestro (MVP)");
+    doc.moveDown(0.4);
+    doc.fontSize(11).font("Helvetica").text(
+      "Este MVP confirma que el flujo Upload → API → PDF funciona. " +
+      "En la siguiente fase: lectura del PDF (LSEG), extracción de datos clave, " +
+      "y generación del reporte con el formato maestro listo para cliente."
+    );
 
-    drawSectionTitle(doc, "Perspectiva General");
-    drawPara(doc, report.perspectiva_general || "N/D");
+    doc.moveDown(1);
+    doc.fontSize(12).font("Helvetica-Bold").text("Inputs recibidos");
+    doc.fontSize(11).font("Helvetica").text(`• Ticker: ${ticker || "(vacío)"}`);
+    doc.text(`• Firma: ${firm}`);
+    doc.text(`• Cliente: ${client || "(vacío)"}`);
+    doc.text(`• PDF bytes: ${pdfBuffer?.length || 0}`);
 
-    drawSectionTitle(doc, "Datos Clave del Ticker");
-    drawKeyValueBullets(doc, report.datos_clave);
-
-    drawSectionTitle(doc, "Análisis y Comentarios");
-    drawPara(doc, report.analisis_comentarios || "N/D");
-
-    drawSectionTitle(doc, "Puntos Positivos");
-    drawBullets(doc, report.positivos);
-
-    drawSectionTitle(doc, "Puntos Negativos");
-    drawBullets(doc, report.negativos);
-
-    drawSectionTitle(doc, "Conclusión y Recomendación");
-    drawPara(doc, report.conclusion_recomendacion || "N/D");
-
-    drawSectionTitle(doc, "Disclaimer");
-    drawPara(doc, report.disclaimer || "Este material es informativo y no constituye recomendación.");
+    doc.moveDown(1.2);
+    doc.fontSize(10).fillColor("#444444").text(
+      "Disclaimer: Este documento es solo informativo y no constituye recomendación de inversión. " +
+      "Cualquier decisión debe evaluarse con base en objetivos, tolerancia al riesgo y situación financiera del cliente. " +
+      "INVERNORD no garantiza resultados futuros."
+    );
 
     doc.end();
+
+    await new Promise((resolve) => doc.on("end", resolve));
+    const out = Buffer.concat(chunks);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${ticker || "REPORT"}_INVERNORD_report.pdf"`);
+    return res.status(200).send(out);
   } catch (err) {
-    console.error(err);
-    return res.status(500).send(err?.message || "Server error");
+    console.error("API error:", err);
+    return res.status(500).send(err?.message || "Internal Server Error");
   }
 }
