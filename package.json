@@ -1,10 +1,12 @@
 {
   "name": "billion-vercel",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "dependencies": {
+    "formidable": "^3.5.2",
+    "openai": "^4.58.0",
     "pdf-parse": "^1.1.1",
-    "pdfkit": "^0.14.0",
-    "busboy": "^1.6.0"
+    "pdfkit": "^0.15.0"
   }
 }
